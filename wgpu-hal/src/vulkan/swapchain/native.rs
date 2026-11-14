@@ -380,6 +380,8 @@ impl Swapchain for NativeSwapchain {
         profiling::scope!("Swapchain::release_resources");
         {
             profiling::scope!("vkDeviceWaitIdle");
+            // vkDeviceWaitIdle counts as a use of every queue the device owns.
+            let _queue = device.shared.external_queue_lock.lock();
             // We need to also wait until all presentation work is done. Because there is no way to portably wait until
             // the presentation work is done, we are forced to wait until the device is idle.
             let _ = unsafe {
@@ -612,6 +614,7 @@ impl Swapchain for NativeSwapchain {
 
         let suboptimal = {
             profiling::scope!("vkQueuePresentKHR");
+            let _queue = queue.device.external_queue_lock.lock();
             unsafe { self.functor.queue_present(queue.raw, &vk_info) }.map_err(|error| {
                 match error {
                     vk::Result::ERROR_OUT_OF_DATE_KHR => crate::SurfaceError::Outdated,

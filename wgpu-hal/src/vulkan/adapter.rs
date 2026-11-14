@@ -2907,6 +2907,7 @@ impl super::Adapter {
             family_index,
             queue_index,
             raw_queue,
+            external_queue_lock: Default::default(),
             drop_guard,
             instance: Arc::clone(&self.instance),
             physical_device: self.raw,

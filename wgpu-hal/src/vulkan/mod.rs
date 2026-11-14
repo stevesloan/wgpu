@@ -502,11 +502,36 @@ struct RenderPassKey {
     multiview_mask: Option<NonZeroU32>,
 }
 
+/// Held around every use this backend makes of its `VkQueue`, and offered to
+/// code outside wgpu that uses the same queue.
+///
+/// Vulkan requires access to a `VkQueue` to be externally synchronised. wgpu
+/// serialises its own, but an OpenXR runtime is handed the application's queue
+/// and uses it inside `xrBeginFrame`, `xrEndFrame`, `xrAcquireSwapchainImage`
+/// and `xrReleaseSwapchainImage`; the application must keep its own queue use
+/// out of those calls. Take this lock around them.
+///
+/// Taken innermost here, around the Vulkan call alone, so holding it elsewhere
+/// cannot deadlock against wgpu's own locks.
+#[derive(Clone, Debug, Default)]
+pub struct ExternalQueueLock(Arc<Mutex<()>>);
+
+/// The queue is this holder's alone until the guard drops.
+#[derive(Debug)]
+pub struct ExternalQueueGuard<'a>(#[allow(dead_code)] parking_lot::MutexGuard<'a, ()>);
+
+impl ExternalQueueLock {
+    pub fn lock(&self) -> ExternalQueueGuard<'_> {
+        ExternalQueueGuard(self.0.lock())
+    }
+}
+
 struct DeviceShared {
     raw: ash::Device,
     family_index: u32,
     queue_index: u32,
     raw_queue: vk::Queue,
+    external_queue_lock: ExternalQueueLock,
     instance: Arc<InstanceShared>,
     physical_device: vk::PhysicalDevice,
     enabled_extensions: Vec<&'static CStr>,
@@ -673,6 +698,12 @@ impl fmt::Debug for Queue {
 }
 
 impl Queue {
+    /// The lock this queue holds around each of its Vulkan calls. See
+    /// [`ExternalQueueLock`].
+    pub fn external_lock(&self) -> ExternalQueueLock {
+        self.device.external_queue_lock.clone()
+    }
+
     pub fn as_raw(&self) -> vk::Queue {
         self.raw
     }
@@ -1487,6 +1518,7 @@ impl crate::Queue for Queue {
         );
 
         profiling::scope!("vkQueueSubmit");
+        let _queue = self.device.external_queue_lock.lock();
         unsafe {
             self.device
                 .raw
@@ -1511,6 +1543,7 @@ impl crate::Queue for Queue {
     }
 
     unsafe fn wait_for_idle(&self) -> Result<(), crate::DeviceError> {
+        let _queue = self.device.external_queue_lock.lock();
         unsafe { self.device.raw.queue_wait_idle(self.raw) }
             .map_err(map_host_device_oom_and_lost_err)
     }
